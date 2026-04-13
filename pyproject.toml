@@ -6,7 +6,7 @@ requires = [ "hatchling" ]
 [project]
 name = "interpretable-structural-dynamics"
 version = "0.1.0"
-description = "Generic template to bootstrap your PyTorch project"
+description = "testing various structural experiments through Physics Informed Neural Networks(e.g. PI-NODES) while reviewing their interpretation capabilities"
 authors = [ { name = "Vassilis Sioros", email = "v.sioros@iit.demokritos.gr" } ]
 requires-python = ">=3.11"
 
