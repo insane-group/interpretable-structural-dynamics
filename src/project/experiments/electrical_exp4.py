@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import os
 import matplotlib.pyplot as plt
+from sklearn.decomposition import PCA
 
 from project.models.physics_informed_satmd import SATMDFrequencyRelativeParameterModel
 from project.models.satmd_groundtruth import SATMDFrequencyGroundTruth
@@ -259,6 +260,164 @@ def evaluate_on_pairs(model,model_ctor,fixed_params,omega_grid,eval_rl_pairs,nor
 
     return results
 
+def compute_frequency_sensitivity(model, acc_curve, norm_info, freq_hz):
+
+    model.eval()
+
+    # Convert the complex acceleration FRF into a real-valued feature vector
+    # Then add a batch dimension
+    feat = acceleration_to_features(acc_curve).unsqueeze(0)
+
+    # Detach from any previous computation graph and enable gradients with respect to the input features
+    # We only want dR/d(input) and dL/d(input)
+    feat = feat.clone().detach().requires_grad_(True)
+
+    # Forward pass through the inverse model
+    # Output has shape [1, 2], corresponding to normalized [R, L]
+    pred_norm = model(feat)
+
+    # Separate normalized R and L predictions
+    R_norm = pred_norm[0, 0]
+    L_norm = pred_norm[0, 1]
+
+    # Compute gradient of predicted R with respect to the input FRF features
+    R_norm.backward(retain_graph=True)
+
+    # Store the gradient vector dR/dfeat
+    grad_R = feat.grad.detach().clone()[0]
+
+    # Clear gradients before computing dL/dfeat
+    feat.grad.zero_()
+
+    # Compute gradient of predicted L with respect to the input FRF features
+    L_norm.backward()
+
+    # Store the gradient vector dL/dfeat
+    grad_L = feat.grad.detach().clone()[0]
+
+    # Number of frequency points.
+    n_freq = len(freq_hz)
+
+    # We reshape the gradients back to [n_freq, 2]
+    # where the second dimension corresponds to the two acceleration components
+    grad_R_real = grad_R[:2 * n_freq].reshape(n_freq, 2)
+    grad_R_imag = grad_R[2 * n_freq:].reshape(n_freq, 2)
+
+    grad_L_real = grad_L[:2 * n_freq].reshape(n_freq, 2)
+    grad_L_imag = grad_L[2 * n_freq:].reshape(n_freq, 2)
+
+    # For each frequency, this gives one scalar sensitivity value
+    sens_R = grad_R_real.abs().sum(dim=1) + grad_R_imag.abs().sum(dim=1)
+    sens_L = grad_L_real.abs().sum(dim=1) + grad_L_imag.abs().sum(dim=1)
+
+    # Normalize each sensitivity curve by its maximum value
+    # 1.0 = most important frequency for that parameter.
+    sens_R = sens_R / sens_R.max().clamp_min(1e-12)
+    sens_L = sens_L / sens_L.max().clamp_min(1e-12)
+
+    # Return CPU tensors for plotting.
+    return sens_R.cpu(), sens_L.cpu()
+
+def compute_average_frequency_sensitivity(model, model_ctor, fixed_params, omega_grid, freq_hz, rl_pairs, norm_info, device="cpu"):
+
+    # Lists that will store one sensitivity curve per R,L case
+    all_sens_R = []
+    all_sens_L = []
+
+    # Label list of each pair
+    labels = []
+
+    # Loop through all selected R,L test cases
+    for R_test, L_test in rl_pairs:
+
+        # This generates the acceleration FRF that will be passed into the inverse model.
+        sys = model_ctor(**fixed_params, R=R_test, L=L_test).to(device)
+
+        # Compute the complex structural acceleration FRF for this case
+        acc_test = sys.structural_accel_frf(omega_grid)
+
+        # Compute local frequency sensitivity for this one FRF
+        sens_R, sens_L = compute_frequency_sensitivity(model=model, acc_curve=acc_test, norm_info=norm_info, freq_hz=freq_hz)
+
+        # Store the sensitivity curves
+        all_sens_R.append(sens_R)
+        all_sens_L.append(sens_L)
+        labels.append(f"R={R_test}, L={L_test:.3f}")
+
+    # Stack curves into matrices of shape
+    # Each row corresponds to one R,L case
+    all_sens_R_stack = torch.stack(all_sens_R, dim=0)
+    all_sens_L_stack = torch.stack(all_sens_L, dim=0)
+
+    # Average sensitivity across all cases.
+    # This gives the frequency regions that are important on average
+    mean_sens_R = all_sens_R_stack.mean(dim=0)
+    mean_sens_L = all_sens_L_stack.mean(dim=0)
+
+    # Standard deviation across cases
+    # This shows how much the sensitivity varies from case to case
+    std_sens_R = all_sens_R_stack.std(dim=0)
+    std_sens_L = all_sens_L_stack.std(dim=0)
+
+    # Normalize the mean curves for easier plotting.
+    # Note: the standard deviations are not renormalized here after this operation
+    mean_sens_R = mean_sens_R / mean_sens_R.max().clamp_min(1e-12)
+    mean_sens_L = mean_sens_L / mean_sens_L.max().clamp_min(1e-12)
+
+    return all_sens_R, all_sens_L, mean_sens_R, mean_sens_L, std_sens_R, std_sens_L, labels
+
+@torch.no_grad()
+def get_latent_features(model, X):
+
+    model.eval()
+
+    # Start from the input FRF feature vectors
+    h = X
+
+    # The result is the hidden 64-dimensional latent representation
+    for layer in list(model.net.children())[:-2]:
+        h = layer(h)
+
+    return h
+
+def plot_sensitivity(all_sens = None, labels = None, save_path = None, title = None):
+
+    plt.figure(figsize=(10, 4))
+    for sens, label in zip(all_sens, labels):
+        plt.plot(freq_hz, sens.numpy(), label=label)
+
+    plt.xlabel("Frequency [Hz]")
+    plt.ylabel("Normalized sensitivity")
+    plt.title(title)
+    plt.grid(True)
+    plt.legend(fontsize=8)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300)
+
+def plot_sensitivity_heatmap(sens_mat = None, labels = None, save_path = None, title = None, colorbar_label = None):
+    plt.figure(figsize=(10, 4))
+    plt.imshow(
+        sens_mat,
+        aspect="auto",
+        origin="lower",
+        extent=[freq_hz[0], freq_hz[-1], 0, len(labels)],
+    )
+    plt.colorbar(label=colorbar_label)
+    plt.xlabel("Frequency [Hz]")
+    plt.ylabel("Case index")
+    plt.title(title)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300)
+
+def plot_pca(Z_2d = None, c = None, label = None, save_path = None):
+    plt.figure(figsize=(6, 5))
+    sc = plt.scatter(Z_2d[:, 0], Z_2d[:, 1], c=c.cpu().numpy(), s=30)
+    plt.xlabel("Latent PC1")
+    plt.ylabel("Latent PC2")
+    plt.colorbar(sc, label=label)
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300, bbox_inches="tight")
 
 if __name__ == "__main__":
 
@@ -386,7 +545,7 @@ if __name__ == "__main__":
     # # save the model
     # save_dir = "../../../models/"
     # os.makedirs(save_dir, exist_ok=True)
-    # save_path = os.path.join(save_dir, "rl_inverse_net_1_256_5000_V2.pth")
+    # save_path = os.path.join(save_dir, "rl_inverse_net_5_256_5000.pth")
     # torch.save(regressor.state_dict(), save_path)
 
     # load the model
@@ -404,17 +563,53 @@ if __name__ == "__main__":
         (60.0, 300e-3),
     ]
 
-    results = evaluate_on_pairs(
-        model=regressor,
-        model_ctor=SATMDFrequencyGroundTruth,
-        fixed_params=fixed_params,
-        omega_grid=omega_t,
-        eval_rl_pairs=eval_rl_pairs,
-        norm_info=norm_info,
-        device=device,
-    )
+    results = evaluate_on_pairs(model=regressor,model_ctor=SATMDFrequencyGroundTruth,fixed_params=fixed_params,omega_grid=omega_t,eval_rl_pairs=eval_rl_pairs,norm_info=norm_info,device=device)
 
     for r in results:
         print(r)
+
+
+    all_sens_R, all_sens_L, mean_sens_R, mean_sens_L, std_sens_R, std_sens_L, labels = compute_average_frequency_sensitivity(model=regressor, model_ctor=SATMDFrequencyGroundTruth, fixed_params=fixed_params, omega_grid=omega_t, freq_hz=freq_hz, rl_pairs=eval_rl_pairs, norm_info=norm_info, device=device)
+
+    print(f"Mean sensitivity to R: mean = {mean_sens_R.mean().item():.6f}, std = {mean_sens_R.std().item():.6f}")
+    print(f"Mean sensitivity to L: mean = {mean_sens_L.mean().item():.6f}, std = {mean_sens_L.std().item():.6f}")
+
+    print(f"Across-case std for R sensitivity: mean = {std_sens_R.mean().item():.6f}, max = {std_sens_R.max().item():.6f}")
+    print(f"Across-case std for L sensitivity: mean = {std_sens_L.mean().item():.6f}, max = {std_sens_L.max().item():.6f}")
+
+    save_path_sensitivity_R = "../../../logs/sensitivity_to_R.png"
+    title = "Sensitivity to R across different blind cases"
+    plot_sensitivity(all_sens = all_sens_R, labels = labels, save_path=save_path_sensitivity_R, title=title)
+
+
+    save_path_sensitivity_L = "../../../logs/sensitivity_to_L.png"
+    title = "Sensitivity to L across different blind cases"
+    plot_sensitivity(all_sens = all_sens_L, labels = labels, save_path=save_path_sensitivity_L, title=title)
+
+    sens_R_mat = torch.stack(all_sens_R).numpy()
+    sens_L_mat = torch.stack(all_sens_L).numpy()
+
+    save_path_sensitivity_R_heatmap = "../../../logs/sensitivity_to_R_heatmap.png"
+    title = "Sensitivity-to-R heatmap across blind cases"
+    colorbar_label="Sensitivity to R"
+    plot_sensitivity_heatmap(sens_mat=sens_R_mat, labels = labels, save_path=save_path_sensitivity_R_heatmap, title = title, colorbar_label=colorbar_label)
+
+
+    save_path_sensitivity_L_heatmap = "../../../logs/sensitivity_to_L_heatmap.png"
+    title = "Sensitivity-to-L heatmap across blind cases"
+    colorbar_label="Sensitivity to L"
+    plot_sensitivity_heatmap(sens_mat=sens_L_mat, labels = labels, save_path=save_path_sensitivity_L_heatmap, title = title, colorbar_label=colorbar_label)
+
+
+    Z = get_latent_features(regressor, X)
+    Z_2d = PCA(n_components=2).fit_transform(Z.cpu().numpy())
+
+    label = "R [Ohm]"
+    save_path_latent_R = "../../../logs/latent_R.png"
+    plot_pca(Z_2d=Z_2d, c=y[:, 0], label=label, save_path=save_path_latent_R)
+
+    label = "L [H]"
+    save_path_latent_L = "../../../logs/latent_L.png"
+    plot_pca(Z_2d=Z_2d, c=y[:, 1], label=label, save_path=save_path_latent_L)
 
 
