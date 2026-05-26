@@ -3,11 +3,29 @@ import torch
 import torch.nn as nn
 import os
 import matplotlib.pyplot as plt
+from sklearn.metrics import mean_absolute_error, r2_score
 from sklearn.decomposition import PCA
+from pysr import PySRRegressor
+from sklearn.model_selection import train_test_split
+import copy
 
 from project.models.physics_informed_satmd import SATMDFrequencyRelativeParameterModel
 from project.models.satmd_groundtruth import SATMDFrequencyGroundTruth
 from project.models.rl_inverse_net import RLInverseNet
+
+plt.rcParams.update({
+    "font.size": 8,
+    "axes.labelsize": 8,
+    "axes.titlesize": 9,
+    "legend.fontsize": 7,
+    "xtick.labelsize": 7,
+    "ytick.labelsize": 7,
+    "lines.linewidth": 1.5,
+    "figure.dpi": 150,
+    "savefig.dpi": 600,
+    "pdf.fonttype": 42,
+    "ps.fonttype": 42,
+})
 
 def train_frequency_model(model,groundtruth_model,omega_grid,epochs=5000,lr=1e-3,print_every=100,lambda_w=1e-8):
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
@@ -71,22 +89,50 @@ def print_relative_error(groundtruth_model=None, relative_model=None):
         rel_err = torch.linalg.norm(Y_pred - Y_true) / torch.linalg.norm(Y_true)
         print("Relative FRF error:", rel_err.item())
 
-def plot_frf(groundtruth_model=None, relative_model=None, omega_t=None, freq_hz=None, save_path=None, dpi=300):
-    with torch.no_grad():
-        Y_true = groundtruth_model.solve_frf(omega_t).cpu()
-        Y_pred = relative_model.solve_frf(omega_t).cpu()
 
-    plt.figure(figsize=(10, 4))
-    plt.plot(freq_hz, torch.abs(Y_true).numpy(), label="True")
-    plt.plot(freq_hz, torch.abs(Y_pred).numpy(), "--", label="Pred")
-    plt.xlabel("Frequency [Hz]")
-    plt.ylabel("|FRF|")
-    plt.legend()
-    plt.grid(True)
+def plot_frf(groundtruth_model, relative_model, omega_t, freq_hz, save_path=None, dpi=600, figsize=(5.8, 3.4)):
+
+    groundtruth_model.eval()
+    relative_model.eval()
+
+    with torch.no_grad():
+        Y_true = groundtruth_model.solve_frf(omega_t).detach().cpu()
+        Y_pred = relative_model.solve_frf(omega_t).detach().cpu()
+
+    freq_hz = np.asarray(freq_hz)
+
+    Y_true_mag = torch.abs(Y_true).numpy()
+    Y_pred_mag = torch.abs(Y_pred).numpy()
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    ax.plot(freq_hz, Y_true_mag, label="Target", linewidth=1.5)
+
+    ax.plot(freq_hz, Y_pred_mag, linestyle="--", label="Identified", linewidth=1.5)
+
+    ax.set_xlabel("Frequency [Hz]")
+    ax.set_ylabel(r"$|Y(\omega)|$")
+
+    ax.legend(frameon=False)
+    ax.tick_params(direction="in", top=True, right=True)
+
+    fig.tight_layout()
 
     if save_path is not None:
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
+        root, ext = os.path.splitext(save_path)
+        directory = os.path.dirname(save_path)
+
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+
+        if ext:
+            fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
+        else:
+            fig.savefig(root + ".pdf", bbox_inches="tight")
+            fig.savefig(root + ".png", dpi=dpi, bbox_inches="tight")
+            fig.savefig(root + ".svg", dpi=dpi, bbox_inches="tight")
+
+    return fig, ax
 
 
 def acceleration_to_features(acc):
@@ -380,44 +426,253 @@ def get_latent_features(model, X):
 
     return h
 
-def plot_sensitivity(all_sens = None, labels = None, save_path = None, title = None):
+def _to_numpy(x):
+    if isinstance(x, torch.Tensor):
+        return x.detach().cpu().numpy()
+    return np.asarray(x)
 
-    plt.figure(figsize=(10, 4))
+
+def _save_figure(fig, save_path=None, dpi=600):
+
+    if save_path is None:
+        return
+
+    root, ext = os.path.splitext(save_path)
+    directory = os.path.dirname(save_path)
+
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+
+    if ext:
+        fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
+    else:
+        fig.savefig(root + ".pdf", bbox_inches="tight")
+        fig.savefig(root + ".png", dpi=dpi, bbox_inches="tight")
+        fig.savefig(root + ".svg", dpi=dpi, bbox_inches="tight")
+
+
+def plot_sensitivity(freq_hz, all_sens, labels, save_path=None, title=None, ylabel="Normalized sensitivity", dpi=600, figsize=(5.8, 3.4)):
+    freq_hz = _to_numpy(freq_hz)
+
+    fig, ax = plt.subplots(figsize=figsize)
+
     for sens, label in zip(all_sens, labels):
-        plt.plot(freq_hz, sens.numpy(), label=label)
+        sens_np = _to_numpy(sens)
 
-    plt.xlabel("Frequency [Hz]")
-    plt.ylabel("Normalized sensitivity")
-    plt.title(title)
-    plt.grid(True)
-    plt.legend(fontsize=8)
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=300)
+        ax.plot(freq_hz, sens_np, label=label, linewidth=1.1)
 
-def plot_sensitivity_heatmap(sens_mat = None, labels = None, save_path = None, title = None, colorbar_label = None):
-    plt.figure(figsize=(10, 4))
-    plt.imshow(
-        sens_mat,
-        aspect="auto",
-        origin="lower",
-        extent=[freq_hz[0], freq_hz[-1], 0, len(labels)],
+    ax.set_xlabel("Frequency [Hz]")
+    ax.set_ylabel(ylabel)
+
+    if title is not None:
+        ax.set_title(title)
+
+    ax.tick_params(direction="in", top=True, right=True)
+
+    # Put legend outside the plot
+    ax.legend(frameon=False, fontsize=6, loc="upper center", bbox_to_anchor=(0.5, -0.28), ncol=2, handlelength=2.0, columnspacing=1.2)
+
+    fig.tight_layout()
+    _save_figure(fig, save_path=save_path, dpi=dpi)
+
+    return fig, ax
+
+def plot_sensitivity_heatmap(freq_hz, sens_mat, labels=None, save_path=None, title=None, colorbar_label="Normalized sensitivity", dpi=600, figsize=(5.8, 3.4), show_case_labels=False):
+
+    freq_hz = _to_numpy(freq_hz)
+    sens_mat = _to_numpy(sens_mat)
+
+    n_cases = sens_mat.shape[0]
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    im = ax.imshow(sens_mat, aspect="auto", origin="lower", extent=[freq_hz[0], freq_hz[-1], 1, n_cases], interpolation="nearest")
+
+    cbar = fig.colorbar(im, ax=ax, pad=0.03)
+    cbar.set_label(colorbar_label)
+
+    ax.set_xlabel("Frequency [Hz]")
+    ax.set_ylabel("Blind case")
+
+    ax.set_yticks(np.arange(1, n_cases + 1))
+
+    if show_case_labels and labels is not None:
+        ax.set_yticklabels(labels)
+    else:
+        ax.set_yticklabels([str(i) for i in range(1, n_cases + 1)])
+
+    if title is not None:
+        ax.set_title(title)
+
+    ax.tick_params(direction="in", top=True, right=True)
+
+    fig.tight_layout()
+    _save_figure(fig, save_path=save_path, dpi=dpi)
+
+    return fig, ax
+
+def plot_pca(Z_2d, c, label, save_path=None, title=None, dpi=600, figsize=(4.2, 3.6)):
+
+    Z_2d = _to_numpy(Z_2d)
+    c = _to_numpy(c)
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    sc = ax.scatter(Z_2d[:, 0], Z_2d[:, 1], c=c, s=14, linewidths=0.0)
+
+    cbar = fig.colorbar(sc, ax=ax)
+    cbar.set_label(label)
+
+    ax.set_xlabel("Latent PC1")
+    ax.set_ylabel("Latent PC2")
+
+    if title is not None:
+        ax.set_title(title)
+
+    ax.tick_params(direction="in", top=True, right=True)
+
+    fig.tight_layout()
+    _save_figure(fig, save_path=save_path, dpi=dpi)
+
+    return fig, ax
+
+
+def build_satmd_model(R, L, m2, kp, m1, c1, cp, k1, e_pz, C_p, force_amp, device):
+
+    model = SATMDFrequencyGroundTruth(m1=m1, m2=m2, c1=c1, cp=cp, k1=k1, kp=kp, e_pz=e_pz, C_p=C_p, R=R, L=L, force_amp=force_amp).to(device)
+
+    model.eval()
+    return model
+
+
+def select_frf_channel(Y, channel_idx=0):
+
+    if Y.ndim == 1:
+        return Y
+    return Y[:, channel_idx]
+
+
+def compute_global_frf_descriptor(R, L, m2, kp, nominal_model, omega_grid, fixed_params, channel_idx=0):
+
+    device = omega_grid.device
+
+    case_model = build_satmd_model(R=R, L=L, m2=m2, kp=kp, device=device, **fixed_params,)
+
+    with torch.no_grad():
+        Y_case = case_model.solve_frf(omega_grid)
+        Y_nom = nominal_model.solve_frf(omega_grid)
+
+    Y_case_j = select_frf_channel(Y_case, channel_idx=channel_idx)
+    Y_nom_j = select_frf_channel(Y_nom, channel_idx=channel_idx)
+
+    numerator = torch.linalg.norm(Y_case_j - Y_nom_j)
+    denominator = torch.linalg.norm(Y_nom_j).clamp_min(1e-12)
+
+    xi_frf = numerator / denominator
+
+    return xi_frf.item()
+
+
+def build_pysr_dataset(R_values,L_values,m2_values,kp_values,nominal_model,omega_grid,fixed_params,channel_idx=0,print_every=200):
+
+    rows = []
+    targets = []
+
+    total_cases = (len(R_values) * len(L_values) * len(m2_values) * len(kp_values))
+
+    counter = 0
+
+    for R in R_values:
+        for L in L_values:
+            for m2 in m2_values:
+                for kp in kp_values:
+
+                    counter += 1
+
+                    xi = compute_global_frf_descriptor(R=R, L=L, m2=m2, kp=kp, nominal_model=nominal_model, omega_grid=omega_grid, fixed_params=fixed_params, channel_idx=channel_idx)
+
+                    rows.append([R, L, m2, kp])
+                    targets.append(xi)
+
+                    if counter % print_every == 0:
+                        print(f"Computed {counter}/{total_cases} cases")
+
+    X = np.array(rows, dtype=np.float64)
+    y = np.array(targets, dtype=np.float64)
+
+    return X, y
+
+
+def normalize_inputs(X):
+
+    X_mean = X.mean(axis=0)
+    X_std = X.std(axis=0)
+    X_std = np.where(X_std == 0.0, 1.0, X_std)
+
+    X_norm = (X - X_mean) / X_std
+
+    return X_norm, X_mean, X_std
+
+
+def make_pysr_model():
+
+    model = PySRRegressor(
+        niterations=800,
+        binary_operators=["+", "-", "*", "/"],
+        unary_operators=["square"],
+        model_selection="accuracy",
+        maxsize=20,
+        parsimony=0,
+        variable_names=["R", "L", "m2", "kp"],
+        random_state=42,
+        parallelism="serial",
+        deterministic=True,
+        verbosity=1,
     )
-    plt.colorbar(label=colorbar_label)
-    plt.xlabel("Frequency [Hz]")
-    plt.ylabel("Case index")
-    plt.title(title)
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=300)
 
-def plot_pca(Z_2d = None, c = None, label = None, save_path = None):
-    plt.figure(figsize=(6, 5))
-    sc = plt.scatter(Z_2d[:, 0], Z_2d[:, 1], c=c.cpu().numpy(), s=30)
-    plt.xlabel("Latent PC1")
-    plt.ylabel("Latent PC2")
-    plt.colorbar(sc, label=label)
-    plt.grid(True)
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=300, bbox_inches="tight")
+    return model
+
+
+def evaluate_symbolic_model(model_sr, X_train, X_test, y_train, y_test):
+
+    y_pred_train = model_sr.predict(X_train)
+    y_pred_test = model_sr.predict(X_test)
+
+    metrics = {
+        "train_mae": mean_absolute_error(y_train, y_pred_train),
+        "test_mae": mean_absolute_error(y_test, y_pred_test),
+        "train_r2": r2_score(y_train, y_pred_train),
+        "test_r2": r2_score(y_test, y_pred_test),
+    }
+
+    return y_pred_train, y_pred_test, metrics
+
+
+def plot_predicted_vs_true(y_test, y_pred_test, save_path=None, dpi=600, figsize=(3.2, 2.8)):
+
+    y_test = _to_numpy(y_test)
+    y_pred_test = _to_numpy(y_pred_test)
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    ax.scatter(y_test, y_pred_test, alpha=0.7, s=16, linewidths=0.0)
+
+    min_val = min(y_test.min(), y_pred_test.min())
+    max_val = max(y_test.max(), y_pred_test.max())
+
+    ax.plot([min_val, max_val], [min_val, max_val], linestyle="--", linewidth=1.2, label="Ideal")
+
+    ax.set_xlabel(r"True $\xi_{\mathrm{FRF}}$")
+    ax.set_ylabel(r"Predicted $\hat{\xi}_{\mathrm{FRF}}$")
+
+    ax.legend(frameon=False)
+    ax.tick_params(direction="in", top=True, right=True)
+
+    fig.tight_layout()
+    _save_figure(fig, save_path=save_path, dpi=dpi)
+
+    return fig, ax
+
 
 if __name__ == "__main__":
 
@@ -459,7 +714,7 @@ if __name__ == "__main__":
     groundtruth_model = SATMDFrequencyGroundTruth(m1=m1,m2=m2,c1=c1,cp=cp,k1=k1,kp=kp,C_p=C_p,e_pz=e_pz,R=R_true,L=L_true,force_amp=force_amp).to(device)
 
     model = SATMDFrequencyRelativeParameterModel(m1=m1,m2_nom=m2_nom,c1=c1,cp=cp,k1=k1,kp_nom=kp_nom,C_p=C_p,e_pz=e_pz,R_nom=R_nom,L_nom=L_nom,force_amp=force_amp).to(device)
-
+    nominal_model = copy.deepcopy(model)
     # load the pretrained model
     model.load_state_dict(torch.load("../../../models/electrical_exp4_correction_net.pth", map_location=device, weights_only=True))
     model.eval()
@@ -486,7 +741,7 @@ if __name__ == "__main__":
     print_parameters(model=model)
     print_relative_error(groundtruth_model=groundtruth_model, relative_model=model)
 
-    save_path = "../../../logs/freq_response_comparison.png"
+    save_path = "../../../logs/freq_response_comparison"
     plot_frf(groundtruth_model=groundtruth_model, relative_model=model, omega_t=omega_t, freq_hz=freq_hz, save_path=save_path)
 
     # these are the 30 pairs for training
@@ -577,39 +832,117 @@ if __name__ == "__main__":
     print(f"Across-case std for R sensitivity: mean = {std_sens_R.mean().item():.6f}, max = {std_sens_R.max().item():.6f}")
     print(f"Across-case std for L sensitivity: mean = {std_sens_L.mean().item():.6f}, max = {std_sens_L.max().item():.6f}")
 
-    save_path_sensitivity_R = "../../../logs/sensitivity_to_R.png"
-    title = "Sensitivity to R across different blind cases"
-    plot_sensitivity(all_sens = all_sens_R, labels = labels, save_path=save_path_sensitivity_R, title=title)
+    save_path_sensitivity_R = "../../../logs/sensitivity_to_R"
+    title = None
+    plot_sensitivity(freq_hz=freq_hz, all_sens = all_sens_R, labels = labels, save_path=save_path_sensitivity_R, title=title)
 
 
-    save_path_sensitivity_L = "../../../logs/sensitivity_to_L.png"
-    title = "Sensitivity to L across different blind cases"
-    plot_sensitivity(all_sens = all_sens_L, labels = labels, save_path=save_path_sensitivity_L, title=title)
+    save_path_sensitivity_L = "../../../logs/sensitivity_to_L"
+    title = None
+    plot_sensitivity(freq_hz=freq_hz, all_sens = all_sens_L, labels = labels, save_path=save_path_sensitivity_L, title=title)
 
     sens_R_mat = torch.stack(all_sens_R).numpy()
     sens_L_mat = torch.stack(all_sens_L).numpy()
 
-    save_path_sensitivity_R_heatmap = "../../../logs/sensitivity_to_R_heatmap.png"
-    title = "Sensitivity-to-R heatmap across blind cases"
-    colorbar_label="Sensitivity to R"
-    plot_sensitivity_heatmap(sens_mat=sens_R_mat, labels = labels, save_path=save_path_sensitivity_R_heatmap, title = title, colorbar_label=colorbar_label)
+    save_path_sensitivity_R_heatmap = "../../../logs/sensitivity_to_R_heatmap"
+    title = None
+    colorbar_label=r"$S_R(f)$"
+    plot_sensitivity_heatmap(freq_hz=freq_hz, sens_mat=sens_R_mat, labels = labels, save_path=save_path_sensitivity_R_heatmap, title = title, colorbar_label=colorbar_label, show_case_labels=False,)
 
 
-    save_path_sensitivity_L_heatmap = "../../../logs/sensitivity_to_L_heatmap.png"
-    title = "Sensitivity-to-L heatmap across blind cases"
-    colorbar_label="Sensitivity to L"
-    plot_sensitivity_heatmap(sens_mat=sens_L_mat, labels = labels, save_path=save_path_sensitivity_L_heatmap, title = title, colorbar_label=colorbar_label)
+    save_path_sensitivity_L_heatmap = "../../../logs/sensitivity_to_L_heatmap"
+    title = None
+    colorbar_label=r"$S_L(f)$"
+    plot_sensitivity_heatmap(freq_hz=freq_hz, sens_mat=sens_L_mat, labels = labels, save_path=save_path_sensitivity_L_heatmap, title = title, colorbar_label=colorbar_label, show_case_labels=False,)
 
 
     Z = get_latent_features(regressor, X)
     Z_2d = PCA(n_components=2).fit_transform(Z.cpu().numpy())
 
     label = "R [Ohm]"
-    save_path_latent_R = "../../../logs/latent_R.png"
+    save_path_latent_R = "../../../logs/latent_R"
     plot_pca(Z_2d=Z_2d, c=y[:, 0], label=label, save_path=save_path_latent_R)
 
     label = "L [H]"
-    save_path_latent_L = "../../../logs/latent_L.png"
+    save_path_latent_L = "../../../logs/latent_L"
     plot_pca(Z_2d=Z_2d, c=y[:, 1], label=label, save_path=save_path_latent_L)
+
+
+    omega_grid = torch.tensor(omega, dtype=torch.float32, device=device)
+    fixed_params = {
+        "m1": m1,
+        "c1": c1,
+        "cp": cp,
+        "k1": k1,
+        "e_pz": e_pz,
+        "C_p": C_p,
+        "force_amp": force_amp
+    }
+
+    # Build nominal model
+    nominal_model = build_satmd_model(R=R_nom, L=L_nom, m2=m2_nom, kp=kp_nom, device=device, **fixed_params)
+
+    # Parameter ranges for PySR dataset
+    R_values = np.linspace(8.0, 60.0, 10)
+    L_values = np.linspace(32e-3, 300e-3, 10)
+    m2_values = np.linspace(0.30, 0.60, 8)
+    kp_values = np.linspace(50e3, 120e3, 8)
+
+
+    # Build dataset
+    X, y = build_pysr_dataset(
+        R_values=R_values,
+        L_values=L_values,
+        m2_values=m2_values,
+        kp_values=kp_values,
+        nominal_model=nominal_model,
+        omega_grid=omega_grid,
+        fixed_params=fixed_params,
+        channel_idx=0,
+        print_every=200,
+    )
+
+    print("X shape:", X.shape)
+    print("y shape:", y.shape)
+    print("Descriptor range:", y.min(), y.max())
+
+    # Normalize inputs
+    X_norm, X_mean, X_std = normalize_inputs(X)
+
+    print("Input means [R, L, m2, kp]:")
+    print(X_mean)
+
+    print("Input stds [R, L, m2, kp]:")
+    print(X_std)
+
+    # Train/test split
+    X_train, X_test, y_train, y_test = train_test_split(X_norm, y, test_size=0.2, random_state=42)
+
+    # Run PySR
+    model_sr = make_pysr_model()
+    model_sr.fit(X_train, y_train)
+
+    # Evaluate
+    y_pred_train, y_pred_test, metrics = evaluate_symbolic_model(model_sr=model_sr, X_train=X_train, X_test=X_test, y_train=y_train, y_test=y_test)
+
+
+    print("\n==============================")
+    print("Best PySR expression")
+    print("==============================")
+    print(model_sr)
+
+    print("\n==============================")
+    print("Performance")
+    print("==============================")
+    print(f"Train MAE: {metrics['train_mae']:.6e}")
+    print(f"Test  MAE: {metrics['test_mae']:.6e}")
+    print(f"Train R2 : {metrics['train_r2']:.6f}")
+    print(f"Test  R2 : {metrics['test_r2']:.6f}")
+
+    # Plot result
+    plot_predicted_vs_true(y_test, y_pred_test, save_path = "../../../logs/pred_vs_true")
+
+
+
 
 
