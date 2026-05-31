@@ -165,8 +165,8 @@ if __name__ == "__main__":
     elcentro_path, kobe_path = ensure_all_earthquakes()
 
     dt=1.0/256.0
-    # t_full, u_full= load_elcentro(elcentro_path, device, dt)
-    t_full, u_full= load_kobe(kobe_path, device, dt)
+    t_full, u_full= load_elcentro(elcentro_path, device, dt)
+    # t_full, u_full= load_kobe(kobe_path, device, dt)
 
     T_train_sec = 15.0
     N_train = int(T_train_sec / dt) + 1

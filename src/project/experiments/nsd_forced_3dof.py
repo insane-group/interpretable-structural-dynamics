@@ -384,7 +384,7 @@ if __name__ == "__main__":
 
     # Read AT2 and resample to dt_model = 1/256 over the full physical duration
 
-    at2_path = "../../../data/ath.KOBE.KBU000.AT2"
+    at2_path = "../../../data/kobe.at2"
 
     u_file_np, dt_file, npts = read_at2(at2_path)
 
@@ -392,7 +392,7 @@ if __name__ == "__main__":
     T_end = (npts - 1) * dt_file
     t_file = torch.arange(0.0, T_end + dt_file, dt_file)   # length npts
 
-    # Paper/integration grid
+    # Integration grid
     dt = 1.0 / 256.0
     t_full = torch.arange(0.0, T_end + dt, dt, device=device)  # ~8193 points
 
@@ -534,7 +534,7 @@ if __name__ == "__main__":
     state = torch.load(save_model_path, map_location=device, weights_only=True)
     model_nsd.load_state_dict(state, strict=False)
 
-    # elapsed_time_prev = 100*60
+    # elapsed_time_prev = 0
 
     # model_nsd, loss_hist = train_scheme_with_disc_multiamp_exp3(
     #     scheme=3,
@@ -605,12 +605,12 @@ if __name__ == "__main__":
     true_trajectory = TruthPhaseNSD_3DOF(M_true, K_true, C_true, nsd_force_bilinear)
 
     true_trajectory.u_fun = UFunFromSamples(t_full, u_full_2)
-    true_trajectory.amp = 100.0
+    true_trajectory.amp = 120.0
 
-    model.amp = 100.0
+    model.amp = 120.0
     model.u_fun = UFunFromSamples(t_full, u_full_2)
 
-    model_nsd.amp = 100.0
+    model_nsd.amp = 120.0
     model_nsd.u_fun = UFunFromSamples(t_full, u_full_2)
 
 
@@ -619,8 +619,8 @@ if __name__ == "__main__":
         traj = odeint(true_trajectory, h0_4, t_full, method="rk4", options={"step_size" : dt_ec})  # (T,6)
 
 
-    save_path_x = save_plot_path + "nsd_3dof_100_full_traj_x1_elcentro_eval.png"
-    save_path_v = save_plot_path + "nsd_3dof_100_full_traj_v1_elcentro_eval.png"
+    save_path_x = save_plot_path + "nsd_3dof_120_full_traj_x1_elcentro_eval.png"
+    save_path_v = save_plot_path + "nsd_3dof_120_full_traj_v1_elcentro_eval.png"
     plot_trajectories(t_full, T_train_sec, [traj, traj_nn], labels=["measured (synthetic truth)", "pi-node"], idx=0, ylabel="x1", save_path = save_path_x)
     plot_trajectories(t_full, T_train_sec, [traj, traj_nn], labels=["measured (synthetic truth)", "pi-node"], idx=3, ylabel="v1", save_path = save_path_v)
 

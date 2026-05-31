@@ -355,15 +355,15 @@ def evaluate_scheme_on_amp(scheme_name, model, amp_eval, traj_test_true):
 
     mse_full = loss_fn(pred, traj_test_true).item()
 
-    # split at 4s
-    mid_idx = len(t_train)  # since t_train ends at 4s with same dt
+    # split at 10s
+    mid_idx = len(t_train)  # since t_train ends at 10s with same dt
     mse_0_4  = loss_fn(pred[:mid_idx], traj_test_true[:mid_idx]).item()
     mse_4_8  = loss_fn(pred[mid_idx:], traj_test_true[mid_idx:]).item()
 
     print(f"\n=== Evaluation for {scheme_name} (amp = {amp_eval}) ===")
-    print(f"MSE 0–8s  : {mse_full:.4e}")
-    print(f"MSE 0–4s  : {mse_0_4:.4e}")
-    print(f"MSE 4–8s  : {mse_4_8:.4e}")
+    print(f"MSE 0–20s  : {mse_full:.4e}")
+    print(f"MSE 0–10s  : {mse_0_4:.4e}")
+    print(f"MSE 10–20s  : {mse_4_8:.4e}")
 
 
 def save_model(model, path):
@@ -663,7 +663,6 @@ if __name__ == "__main__":
     #   loss_history_20_init = [],
     #   save_model_path = save_model_path
     # )
-    # evaluate_scheme_on_amp("Scheme 3", model3, amp_test)
     # save_model(model3, save_model_path)
 
     amp_test = 10.0
@@ -688,6 +687,11 @@ if __name__ == "__main__":
     model_10 = PINODEFuncForcedVibration(K, C, B_force)
     state = torch.load(save_path + "forced_vibration_model_h0_2_10sec_full_physics.pth", map_location=device, weights_only=True)
     model_10.load_state_dict(state, strict=False)
+
+    evaluate_scheme_on_amp("No Physics 10sec Training", model_10_nophysics , amp_test, traj_gt)
+    evaluate_scheme_on_amp("Full Physics 4sec Training", model_4 , amp_test, traj_gt)
+    evaluate_scheme_on_amp("Full Physics 6sec Training", model_6 , amp_test, traj_gt)
+    evaluate_scheme_on_amp("Full Physics 10sec Training", model_10 , amp_test, traj_gt)
 
     save_plot_path = "../../../logs/white_noise_forcing_models_evaluation.png"
 

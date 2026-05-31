@@ -437,6 +437,8 @@ if __name__ == "__main__":
     state3 = torch.load(save_path + "free_vibration_model_full_linear_physics.pth", map_location=device, weights_only=True)
     model3.load_state_dict(state3, strict=False)
 
+    # model3 = train_scheme_with_disc(3, model3, num_epochs=5000, lr=1e-3, lambda_disc=1.0)
+
     models = {
         1: model1,  # trained PINODEFuncScheme1
         2: model2,  # trained PINODEFuncScheme2
@@ -460,6 +462,10 @@ if __name__ == "__main__":
 
     # Plot full 12 seconds
     plot_ic_results(t_test, traj2_test, pred2_s1, pred2_s2, pred2_s3, save_path=save_path)
+
+    evaluate_scheme(1, model1)
+    evaluate_scheme(2, model2)
+    evaluate_scheme(3, model3)
 
     with torch.no_grad():
         pred3_s1 = odeint(model1, h0_3, t_test, method='rk4')  # scheme 1
