@@ -4,12 +4,29 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 from torchdiffeq import odeint
+import matplotlib as mpl
+import matplotlib.pyplot as plt
 import pysindy as ps
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Import models
 from project.models.pinode_free_4dof import PINODEFunc4DOF
+
+
+plt.rcParams.update({
+    "font.size": 8,
+    "axes.labelsize": 8,
+    "axes.titlesize": 9,
+    "legend.fontsize": 7,
+    "xtick.labelsize": 7,
+    "ytick.labelsize": 7,
+    "lines.linewidth": 1.5,
+    "figure.dpi": 150,
+    "savefig.dpi": 600,
+    "pdf.fonttype": 42,
+    "ps.fonttype": 42,
+})
 
 def ground_truth_rhs(t, h):
 
@@ -168,149 +185,148 @@ def save_model(model, path):
     torch.save(model.state_dict(), path)
     print(f"Saved model to {path}")
 
-import matplotlib.pyplot as plt
+def plot_nn_vs_interdofs(models, scheme, h_true_list, K_true, C_true, k_nl_true, device="cpu", save_path=None):
 
-def plot_nn_vs_interdofs(models, schemes, h_true_list, K_true, C_true, k_nl_true, device="cpu", save_path=None):
+    if scheme not in (1, 2, 3):
+        raise ValueError(f"scheme must be 1, 2, or 3, got {scheme}")
 
-    # Concatenate true data
-    h_true = torch.cat(h_true_list, dim=0).to(device)   # (N, 8)
+    # Concatenate reference states
+    h_true = torch.cat(h_true_list, dim=0).to(device)
     x = h_true[:, :4]
     v = h_true[:, 4:]
 
-    # Inter-DOF displacement
-    dx1 = x[:, 0]
-    dx2 = x[:, 1] - x[:, 0]
-    dx3 = x[:, 2] - x[:, 1]
-    dx4 = x[:, 3] - x[:, 2]
-    dx_list = [dx4, dx3, dx2, dx1]
+    # Relative displacements
+    drift_1 = x[:, 0]
+    drift_2 = x[:, 1] - x[:, 0]
+    drift_3 = x[:, 2] - x[:, 1]
+    drift_4 = x[:, 3] - x[:, 2]
 
-    row_labels = [
-        r"$x_4 - x_3$",
-        r"$x_3 - x_2$",
-        r"$x_2 - x_1$",
-        r"$x_1$",
+    drift_list = [drift_4, drift_3, drift_2, drift_1]
+
+    drift_labels = [
+        r"Relative displacement $x_4-x_3$",
+        r"Relative displacement $x_3-x_2$",
+        r"Relative displacement $x_2-x_1$",
+        r"Displacement $x_1$",
     ]
 
     row_dof_idx = [3, 2, 1, 0]
 
     scheme_titles = {
-        1: "Scheme 1 (no physics)",
-        2: "Scheme 2 (weak physics)",
-        3: "Scheme 3 (strong physics)"
+        1: r"Scheme 1: No physics",
+        2: r"Scheme 2: Weak physics",
+        3: r"Scheme 3: Full linear physics",
     }
-    colors = {1: "tab:red", 2: "tab:blue", 3: "tab:green"}
 
-    n_rows = 4
-    n_cols = len(schemes)
+    scheme_colors = {
+        1: "tab:red",
+        2: "tab:blue",
+        3: "tab:green",
+    }
 
-    fig, axes = plt.subplots(n_rows, n_cols,
-                             figsize=(4 * n_cols, 3 * n_rows),
-                             squeeze=False)
+    model = models[scheme].to(device)
+    model.eval()
 
-    # Precompute numpy versions of x-axis (same for all schemes)
-    dx_np = [d.cpu().numpy() for d in dx_list]
+    with torch.no_grad():
+        nn_output = model.mlp(h_true).detach().cpu().numpy()
 
-    # Loop over schemes
-    for c, s in enumerate(schemes):
-        model = models[s].to(device)
-        model.eval()
+    reference_discrepancy = discrepancy_reference(x, v, scheme=scheme, K=K_true.to(device), C=C_true.to(device), k_nl=k_nl_true).detach().cpu().numpy()
 
-        # NN(h_true):
-        with torch.no_grad():
-            nn_out = model.mlp(h_true).cpu().numpy()   # (N, 4)
+    drift_np = [drift.detach().cpu().numpy() for drift in drift_list]
 
-        # Analytic discrepancy for this scheme
-        a_disc = discrepancy_reference(
-            x, v,
-            scheme=s,
-            K=K_true.to(device),
-            C=C_true.to(device),
-            k_nl=k_nl_true
-        )
-        a_disc_np = a_disc.cpu().numpy()
+    fig, axes = plt.subplots(4, 1, figsize=(8.5, 11), squeeze=False)
+    axes = axes.flatten()
 
-        # Loop over rows / DOFs
-        for r in range(n_rows):
-            dof_idx = row_dof_idx[r]
-            ax = axes[r, c]
+    for row, ax in enumerate(axes):
+        dof_idx = row_dof_idx[row]
 
-            xs = dx_np[r]                  # inter-DOF displacement
-            nn_vals = nn_out[:, dof_idx]   # NN component (dv_i)
-            ref_vals = a_disc_np[:, dof_idx]  # reference discrepancy
+        x_axis = drift_np[row]
+        neural_values = nn_output[:, dof_idx]
+        reference_values = reference_discrepancy[:, dof_idx]
 
-            # Sort by x-axis for smooth curves
-            idx = np.argsort(xs)
-            xs_sorted = xs[idx]
-            nn_sorted = nn_vals[idx]
-            ref_sorted = ref_vals[idx]
+        sort_idx = np.argsort(x_axis)
 
-            # Reference (solid black)
-            ax.plot(xs_sorted, ref_sorted,
-                    color="black", linewidth=2, label="reference")
+        ax.plot(x_axis[sort_idx], reference_values[sort_idx], color="black", linewidth=1.8, label=r"Analytical discrepancy")
 
-            # NN(h_true) (dotted)
-            ax.plot(xs_sorted, nn_sorted,
-                    linestyle=":", linewidth=2,
-                    color=colors.get(s, "gray"),
-                    label=f"scheme {s}")
+        ax.plot(x_axis[sort_idx], neural_values[sort_idx], linestyle="--", linewidth=1.6, color=scheme_colors[scheme], label=r"Neural discrepancy")
 
-            ax.set_ylim(-40, 60)
-            ax.set_xlabel(row_labels[r])
-            ax.set_ylabel(f"component {dof_idx+1}")
-            ax.grid(True)
+        ax.set_ylim(-40, 60)
+        ax.set_xlabel(drift_labels[row])
+        ax.set_ylabel(rf"$\Delta \ddot{{x}}_{dof_idx + 1}$")
 
-            if r == 0:
-                ax.set_title(scheme_titles.get(s, f"Scheme {s}"))
-                ax.legend()
+        ax.grid(True, linestyle="--", alpha=0.35)
 
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=300, bbox_inches="tight")
-    plt.close()
+    fig.suptitle(scheme_titles[scheme], fontsize=13, y=0.995)
 
+    # Shared legend below the full figure
+    handles, legend_labels = axes[0].get_legend_handles_labels()
 
-def plot_ic_results(t, gt, pred1, pred2, pred3, save_path=None):
+    fig.legend(handles, legend_labels, loc="lower center", ncol=2, frameon=False, fontsize=11, bbox_to_anchor=(0.5, 0.005))
 
-    # Labels for the 8 state components: 4 displacements + 4 velocities
-    labels = [
-        "x1(t)", "x2(t)", "x3(t)", "x4(t)",
-        "v1(t)", "v2(t)", "v3(t)", "v4(t)"
-    ]
+    fig.tight_layout(rect=[0, 0.05, 1, 0.98])
 
-    # Create 4x2 grid of subplots (8 total, one per state dimension)
-    fig, axes = plt.subplots(4, 2, figsize=(16, 14))
-    axes = axes.flatten()   # flatten into a 1D array for easy indexing
-
-    # Loop through the 8 states (x1..x4, v1..v4)
-    for i in range(8):
-        ax = axes[i]
-
-        # Plot ground-truth trajectory
-        ax.plot(t.cpu(), gt[:, i].cpu(), 'k', lw=2, label="Ground Truth")
-
-        # Plot predictions from each PINODE scheme
-        ax.plot(t.cpu(), pred1[:, i].detach().cpu(), 'b--', lw=1.5, label="Scheme 1")
-        ax.plot(t.cpu(), pred2[:, i].detach().cpu(), 'r--', lw=1.5, label="Scheme 2")
-        ax.plot(t.cpu(), pred3[:, i].detach().cpu(), 'g--', lw=1.5, label="Scheme 3")
-
-        # Title of each subplot = name of that state component
-        ax.set_title(labels[i])
-
-        # x-axis label is time for all plots
-        ax.set_xlabel("Time (s)")
-
-        # Optional grid for readability
-        ax.grid(True)
-
-        # Only show legend on the first subplot to avoid repetition
-        if i == 0:
-            ax.legend(loc="upper right")
-
-    # Remove overlaps / improve spacing
-    plt.tight_layout()
-
-    # Save figure to file if a path was given
     if save_path is not None:
-        plt.savefig(save_path, dpi=250)
+        fig.savefig(save_path, dpi=300, bbox_inches="tight")
+
+    plt.close(fig)
+
+
+def plot_ic_results(t, gt, pred1, pred2, pred3, quantity="displacement", save_path=None):
+
+    if quantity not in ("displacement", "velocity"):
+        raise ValueError(
+            f"quantity must be 'displacement' or 'velocity', got '{quantity}'"
+        )
+
+    time_np = t.detach().cpu().numpy()
+    gt_np = gt.detach().cpu().numpy()
+    pred1_np = pred1.detach().cpu().numpy()
+    pred2_np = pred2.detach().cpu().numpy()
+    pred3_np = pred3.detach().cpu().numpy()
+
+    if quantity == "displacement":
+        state_indices = [0, 1, 2, 3]
+        state_labels = [
+            r"Displacement $x_1(t)$",
+            r"Displacement $x_2(t)$",
+            r"Displacement $x_3(t)$",
+            r"Displacement $x_4(t)$"
+        ]
+        ylabel = r"Displacement"
+    else:
+        state_indices = [4, 5, 6, 7]
+        state_labels = [
+            r"Velocity $\dot{x}_1(t)$",
+            r"Velocity $\dot{x}_2(t)$",
+            r"Velocity $\dot{x}_3(t)$",
+            r"Velocity $\dot{x}_4(t)$"
+        ]
+        ylabel = r"Velocity"
+
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8), sharex=True)
+    axes = axes.flatten()
+
+    for ax, state_idx, state_label in zip(axes, state_indices, state_labels):
+        ax.plot(time_np, gt_np[:, state_idx], color="black", linewidth=1.8, label=r"Ground truth")
+        ax.plot(time_np, pred1_np[:, state_idx], linestyle="--", linewidth=1.4, color="tab:red", label=r"Scheme 1: No physics")
+        ax.plot(time_np, pred2_np[:, state_idx], linestyle="--", linewidth=1.4, color="tab:blue", label=r"Scheme 2: Weak physics")
+        ax.plot(time_np, pred3_np[:, state_idx], linestyle="--", linewidth=1.4, color="tab:green", label=r"Scheme 3: Full linear physics")
+
+        ax.set_title(state_label, pad=8)
+        ax.set_xlabel(r"Time $t$ [s]")
+        ax.set_ylabel(ylabel)
+        ax.grid(True, linestyle="--", alpha=0.35)
+
+    # One shared legend below all subplots
+    handles, legend_labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, legend_labels, loc="lower center", ncol=4, frameon=False, fontsize=11, bbox_to_anchor=(0.5, 0.01))
+
+    fig.tight_layout(rect=[0, 0.07, 1, 0.95])
+
+    if save_path is not None:
+        fig.savefig(save_path, dpi=300, bbox_inches="tight")
+
+    plt.close(fig)
 
 def build_sindy_discrepancy_from_nn(h_true_list, model, device="cpu"):
 
@@ -447,9 +463,13 @@ if __name__ == "__main__":
 
     # For evaluation
     h_true_list = [traj2_train]
-    save_path = "../../../logs/free_vibration_inter_dof_4dof.png"
+    save_path1 = "../../../logs/free_vibration_inter_dof_4dof_scheme1.png"
+    save_path2 = "../../../logs/free_vibration_inter_dof_4dof_scheme2.png"
+    save_path3 = "../../../logs/free_vibration_inter_dof_4dof_scheme3.png"
 
-    plot_nn_vs_interdofs(models=models, schemes=[1, 2, 3], h_true_list=h_true_list, K_true=K, C_true=C, k_nl_true=k_nl_true, device=device, save_path=save_path)
+    plot_nn_vs_interdofs(models=models, scheme=1, h_true_list=h_true_list, K_true=K, C_true=C, k_nl_true=k_nl_true, device=device, save_path=save_path1)
+    plot_nn_vs_interdofs(models=models, scheme=2, h_true_list=h_true_list, K_true=K, C_true=C, k_nl_true=k_nl_true, device=device, save_path=save_path2)
+    plot_nn_vs_interdofs(models=models, scheme=3, h_true_list=h_true_list, K_true=K, C_true=C, k_nl_true=k_nl_true, device=device, save_path=save_path3)
 
     # --- Evaluate IC2 plot (0–12s) ---
 
@@ -458,10 +478,12 @@ if __name__ == "__main__":
         pred2_s2 = odeint(model2, h0_2, t_test, method='rk4')  # scheme 2
         pred2_s3 = odeint(model3, h0_2, t_test, method='rk4')  # scheme 3
 
-    save_path = "../../../logs/free_vibration_4dof_extrapolation_ic2.png"
+    save_path_x = "../../../logs/free_vibration_4dof_extrapolation_ic2_displacements.png"
+    save_path_v = "../../../logs/free_vibration_4dof_extrapolation_ic2_velocities.png"
 
     # Plot full 12 seconds
-    plot_ic_results(t_test, traj2_test, pred2_s1, pred2_s2, pred2_s3, save_path=save_path)
+    plot_ic_results(t_test, traj2_test, pred2_s1, pred2_s2, pred2_s3, quantity="displacement", save_path=save_path_x)
+    plot_ic_results(t_test, traj2_test, pred2_s1, pred2_s2, pred2_s3, quantity="velocity", save_path=save_path_v)
 
     evaluate_scheme(1, model1)
     evaluate_scheme(2, model2)
@@ -472,10 +494,12 @@ if __name__ == "__main__":
         pred3_s2 = odeint(model2, h0_3, t_test, method='rk4')  # scheme 2
         pred3_s3 = odeint(model3, h0_3, t_test, method='rk4')  # scheme 3
 
-    save_path = "../../../logs/free_vibration_4dof_evaluation_ic3.png"
+    save_path_x = "../../../logs/free_vibration_4dof_evaluation_ic3_displacements.png"
+    save_path_v = "../../../logs/free_vibration_4dof_evaluation_ic3_velocities.png"
 
     # Plot full 12 seconds
-    plot_ic_results(t_test, traj3_test, pred3_s1, pred3_s2, pred3_s3, save_path=save_path)
+    plot_ic_results(t_test, traj3_test, pred3_s1, pred3_s2, pred3_s3, quantity="displacement", save_path=save_path_x)
+    plot_ic_results(t_test, traj3_test, pred3_s1, pred3_s2, pred3_s3, quantity="velocity", save_path=save_path_v)
 
     models_s2_nn = run_sindy_discrepancy_from_nn(h_true_list=[traj2_train],model=model2,dt=dt,threshold=0.05,device=device)
     models_s3_nn = run_sindy_discrepancy_from_nn(h_true_list=[traj2_train],model=model3,dt=dt,threshold=0.05,device=device)

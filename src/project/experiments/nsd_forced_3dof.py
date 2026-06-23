@@ -287,9 +287,13 @@ def train_scheme_with_disc_multiamp_exp3(
 
     return model, loss_history_arr
 
-def plot_trajectories(tt,T_train_sec,trajectories,labels,idx,ylabel,save_path=None):
+def plot_trajectories(tt, T_train_sec, trajectories, labels, idx, ylabel, save_path=None):
+    fig, ax = plt.subplots(figsize=(9, 5))
 
-    fig = plt.figure(figsize=(10, 8))
+    if torch.is_tensor(tt):
+        t_np = tt.detach().cpu().numpy()
+    else:
+        t_np = np.asarray(tt)
 
     for traj, label in zip(trajectories, labels):
         if torch.is_tensor(traj):
@@ -297,20 +301,25 @@ def plot_trajectories(tt,T_train_sec,trajectories,labels,idx,ylabel,save_path=No
         else:
             y = np.asarray(traj)[:, idx]
 
-        plt.plot(tt, y, label=label)
+        ax.plot(t_np, y, linewidth=1.7, label=label)
 
-    plt.axvline(T_train_sec, linestyle="--", label="train end")
+    ax.axvline(T_train_sec, color="black", linestyle="--", linewidth=1.3, label=r"Training boundary")
 
-    plt.xlabel("t [s]")
-    plt.ylabel(ylabel)
-    plt.grid(True)
-    plt.legend()
+    ax.set_xlabel(r"Time $t$ [s]")
+    ax.set_ylabel(ylabel)
+    ax.grid(True, linestyle="--", alpha=0.35)
 
-    fig.tight_layout()
+    # Shared-style legend below the plot
+    handles, legend_labels = ax.get_legend_handles_labels()
+
+    fig.legend(handles, legend_labels, loc="lower center", ncol=len(legend_labels), frameon=False, fontsize=11, bbox_to_anchor=(0.5, -0.02))
+
+    fig.tight_layout(rect=[0, 0.10, 1, 1])
+
     if save_path is not None:
         fig.savefig(save_path, dpi=300, bbox_inches="tight")
 
-    # plt.show()
+    plt.close(fig)
 
 def compute_matrix_mismatch(model):
     # layer 1: Linear(6->10), layer 2: Linear(10->3)
@@ -486,9 +495,8 @@ if __name__ == "__main__":
     save_path_x = save_plot_path + "linear_3dof_100_full_traj_x1.png"
     save_path_v = save_plot_path + "linear_3dof_100_full_traj_v1.png"
 
-    plot_trajectories(t_full, T_train_sec, [truth_amp_full[1], traj_phys_full, pred_full], labels=["measured (synthetic truth)", "physics only", "NN + physics"], idx=0, ylabel="x1", save_path = save_path_x)
-    plot_trajectories(t_full, T_train_sec, [truth_amp_full[1], traj_phys_full, pred_full], labels=["measured (synthetic truth)", "physics only", "NN + physics"], idx=3, ylabel="v1", save_path = save_path_v)
-
+    plot_trajectories(tt=t_full,T_train_sec=15.0,trajectories=[truth_amp_full[1], traj_phys_full, pred_full],labels=[r"Synthetic reference",r"Physics-only model",r"PINODE model"],idx=0,ylabel=r"Displacement $x_1(t)$",save_path=save_path_x)
+    plot_trajectories(tt=t_full,T_train_sec=15.0,trajectories=[truth_amp_full[1], traj_phys_full, pred_full],labels=[r"Synthetic reference",r"Physics-only model",r"PINODE model"],idx=3,ylabel=r"Velocity $\dot{x}_1(t)$",save_path=save_path_v)
 
     K_upd, C_upd = compute_matrix_mismatch(model)
 
@@ -574,8 +582,8 @@ if __name__ == "__main__":
 
     save_path_x = save_plot_path + "nsd_3dof_100_full_traj_x1.png"
     save_path_v = save_plot_path + "nsd_3dof_100_full_traj_v1.png"
-    plot_trajectories(t_full, T_train_sec, [truth_amp_full[1], traj_phys_full, pred_full], labels=["measured (synthetic truth)", "NN1 + physics", "NN1 + NN2 + physics"], idx=0, ylabel="χ1", save_path = save_path_x)
-    plot_trajectories(t_full, T_train_sec, [truth_amp_full[1], traj_phys_full, pred_full], labels=["measured (synthetic truth)", "NN1 + physics", "NN1 + NN2 + physics"], idx=3, ylabel="v1", save_path = save_path_v)
+    plot_trajectories(t_full, T_train_sec, [truth_amp_full[1], traj_phys_full, pred_full], labels=[r"Synthetic reference", r"$NN_1$ + physics", r"$NN_1$ + $NN_2$ + physics"], idx=0, ylabel=r"Displacement $x_1(t)$", save_path=save_path_x)
+    plot_trajectories(t_full, T_train_sec, [truth_amp_full[1], traj_phys_full, pred_full], labels=[r"Synthetic reference", r"$NN_1$ + physics", r"$NN_1$ + $NN_2$ + physics"], idx=3, ylabel=r"Velocity $\dot{x}_1(t)$", save_path=save_path_v)
 
 
     data = np.loadtxt("../../../data/elcentro.dat")
@@ -605,6 +613,26 @@ if __name__ == "__main__":
     true_trajectory = TruthPhaseNSD_3DOF(M_true, K_true, C_true, nsd_force_bilinear)
 
     true_trajectory.u_fun = UFunFromSamples(t_full, u_full_2)
+    true_trajectory.amp = 100.0
+
+    model.amp = 100.0
+    model.u_fun = UFunFromSamples(t_full, u_full_2)
+
+    model_nsd.amp = 100.0
+    model_nsd.u_fun = UFunFromSamples(t_full, u_full_2)
+
+
+    with torch.no_grad():
+        traj_nn = odeint(model_nsd, h0_4, t_full, method="rk4", options={"step_size" : dt_ec})
+        traj = odeint(true_trajectory, h0_4, t_full, method="rk4", options={"step_size" : dt_ec})  # (T,6)
+
+
+    save_path_x = save_plot_path + "nsd_3dof_100_full_traj_x1_elcentro_eval.png"
+    save_path_v = save_plot_path + "nsd_3dof_100_full_traj_v1_elcentro_eval.png"
+    plot_trajectories(t_full, T_train_sec, [traj, traj_nn], labels=[r"Synthetic reference", r"PINODE model"], idx=0, ylabel=r"Displacement $x_1(t)$", save_path=save_path_x)
+    plot_trajectories(t_full, T_train_sec, [traj, traj_nn], labels=[r"Synthetic reference", r"PINODE model"], idx=3, ylabel=r"Velocity $\dot{x}_1(t)$", save_path=save_path_v)
+
+    true_trajectory.u_fun = UFunFromSamples(t_full, u_full_2)
     true_trajectory.amp = 120.0
 
     model.amp = 120.0
@@ -618,9 +646,7 @@ if __name__ == "__main__":
         traj_nn = odeint(model_nsd, h0_4, t_full, method="rk4", options={"step_size" : dt_ec})
         traj = odeint(true_trajectory, h0_4, t_full, method="rk4", options={"step_size" : dt_ec})  # (T,6)
 
-
     save_path_x = save_plot_path + "nsd_3dof_120_full_traj_x1_elcentro_eval.png"
     save_path_v = save_plot_path + "nsd_3dof_120_full_traj_v1_elcentro_eval.png"
-    plot_trajectories(t_full, T_train_sec, [traj, traj_nn], labels=["measured (synthetic truth)", "pi-node"], idx=0, ylabel="x1", save_path = save_path_x)
-    plot_trajectories(t_full, T_train_sec, [traj, traj_nn], labels=["measured (synthetic truth)", "pi-node"], idx=3, ylabel="v1", save_path = save_path_v)
-
+    plot_trajectories(t_full, T_train_sec, [traj, traj_nn], labels=[r"Synthetic reference", r"PINODE model"], idx=0, ylabel=r"Displacement $x_1(t)$", save_path=save_path_x)
+    plot_trajectories(t_full, T_train_sec, [traj, traj_nn], labels=[r"Synthetic reference", r"PINODE model"], idx=3, ylabel=r"Velocity $\dot{x}_1(t)$", save_path=save_path_v)

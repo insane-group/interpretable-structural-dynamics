@@ -11,6 +11,20 @@ import pysindy as ps
 from project.models.pinode_forced_4dof import PINODEFuncForcedVibration
 from project.models.node_no_physics import NODEFuncNoPhysics
 
+plt.rcParams.update({
+    "font.size": 8,
+    "axes.labelsize": 8,
+    "axes.titlesize": 9,
+    "legend.fontsize": 7,
+    "xtick.labelsize": 7,
+    "ytick.labelsize": 7,
+    "lines.linewidth": 1.5,
+    "figure.dpi": 150,
+    "savefig.dpi": 600,
+    "pdf.fonttype": 42,
+    "ps.fonttype": 42
+})
+
 device = "cpu"
 print("Using device:", device)
 
@@ -169,24 +183,7 @@ def true_discrepancy_on_traj(scheme, traj, t_grid, amp, u_fun):
     assert disc.shape == x.shape, (f"discrepancy_reference returned {disc.shape}, expected {x.shape}")
     return disc
 
-def train_scheme_with_disc_multiIC_multiamp_sequential(
-    scheme,
-    model,
-    h0_list,
-    amplitudes,
-    traj_list,
-    traj_list_full,
-    t_train,
-    u_fun,
-    num_epochs=4000,
-    lr=1e-3,
-    log_interval=20,
-    loss_log_path=None,
-    loss_history_init=None,
-    loss_log_path_20=None,
-    loss_history_20_init=None,
-    save_model_path=None,
-):
+def train_scheme_with_disc_multiIC_multiamp_sequential(scheme, model, h0_list, amplitudes, traj_list, traj_list_full, t_train, u_fun, num_epochs=4000, lr=1e-3, log_interval=20, loss_log_path=None, loss_history_init=None, loss_log_path_20=None, loss_history_20_init=None, save_model_path=None):
     # transfer the model to the device
     model = model.to(device)
 
@@ -449,80 +446,116 @@ def compute_a1_from_rhs(t, gt, pred1, pred2, pred3, rhs_gt, model1, model2, mode
 
     return a1_gt, a1_pred1, a1_pred2, a1_pred3
 
-def plot_x1_v1_a1_three_preds(t, h0, amp, u_fun, model_1, model_2, model_3, dt=0.01, label1="Pred 1",label2="Pred 2",label3="Pred 3",save_path=None):
+def plot_x1_v1_a1_three_preds(t, h0, amp, u_fun, model_1, model_2, model_3, dt=0.01, label1="Prediction 1", label2="Prediction 2", label3="Prediction 3", save_path=None):
 
-    # create the groundtruth trajectory
+    # Reference trajectory
     gt = generate_trajectory(h0, t, amp, u_fun)
 
-    # Extract x1, v1
-    x1_gt = gt[:, 0].detach().cpu()
-    v1_gt = gt[:, 4].detach().cpu()
+    # Integrate all three models
+    models = [model_1, model_2, model_3]
+    predictions = []
 
-    model_1.amp = amp
-    model_1.u_fun = u_fun
-    pred1 = odeint(model_1, h0, t, method='rk4', options={"step_size" : dt})
-    x1_pr1 = pred1[:, 0].detach().cpu()
-    v1_pr1 = pred1[:, 4].detach().cpu()
+    for model in models:
+        model.amp = amp
+        model.u_fun = u_fun
 
-    model_2.amp = amp
-    model_2.u_fun = u_fun
-    pred2 = odeint(model_2, h0, t, method='rk4', options={"step_size" : dt})
-    x1_pr2 = pred2[:, 0].detach().cpu()
-    v1_pr2 = pred2[:, 4].detach().cpu()
+        pred = odeint(model, h0, t, method="rk4", options={"step_size": dt})
+        predictions.append(pred)
 
-    model_3.amp = amp
-    model_3.u_fun = u_fun
-    pred3 = odeint(model_3, h0, t, method='rk4', options={"step_size" : dt})
-    x1_pr3 = pred3[:, 0].detach().cpu()
-    v1_pr3 = pred3[:, 4].detach().cpu()
+    pred1, pred2, pred3 = predictions
 
+    # Extract first-dof displacement and velocity
+    t_cpu = t.detach().cpu().numpy()
+
+    x1_gt = gt[:, 0].detach().cpu().numpy()
+    v1_gt = gt[:, 4].detach().cpu().numpy()
+
+    x1_pred1 = pred1[:, 0].detach().cpu().numpy()
+    v1_pred1 = pred1[:, 4].detach().cpu().numpy()
+
+    x1_pred2 = pred2[:, 0].detach().cpu().numpy()
+    v1_pred2 = pred2[:, 4].detach().cpu().numpy()
+
+    x1_pred3 = pred3[:, 0].detach().cpu().numpy()
+    v1_pred3 = pred3[:, 4].detach().cpu().numpy()
+
+    # Compute acceleration directly from the governing right-hand sides
     rhs_gt = make_ground_truth_rhs(amp, u_fun)
 
-    a1_gt, a1_pr1, a1_pr2, a1_pr3 = compute_a1_from_rhs(t, gt, pred1, pred2, pred3, rhs_gt, model_1, model_2, model_3)
+    a1_gt, a1_pred1, a1_pred2, a1_pred3 = compute_a1_from_rhs(t, gt, pred1, pred2, pred3, rhs_gt, model_1, model_2, model_3)
 
-    t_cpu = t.detach().cpu()
+    # Ensure acceleration arrays are NumPy arrays
+    a1_gt = np.asarray(a1_gt)
+    a1_pred1 = np.asarray(a1_pred1)
+    a1_pred2 = np.asarray(a1_pred2)
+    a1_pred3 = np.asarray(a1_pred3)
 
-    # Plot
-    plt.figure(figsize=(12, 9))
+    fig, axes = plt.subplots(3, 1, figsize=(9, 8), sharex=True)
 
-    # x1(t)
-    plt.subplot(3, 1, 1)
-    plt.plot(t_cpu, x1_gt,  'k',  lw=2,   label="GT x1")
-    plt.plot(t_cpu, x1_pr1, 'r--', lw=1.5, label=f"{label1} x1")
-    plt.plot(t_cpu, x1_pr2, 'g--', lw=1.5, label=f"{label2} x1")
-    plt.plot(t_cpu, x1_pr3, 'b--', lw=1.5, label=f"{label3} x1")
-    plt.ylabel("x1(t)")
-    plt.grid(True)
-    plt.legend()
+    prediction_styles = [
+        {
+            "values_x": x1_pred1,
+            "values_v": v1_pred1,
+            "values_a": a1_pred1,
+            "label": label1,
+            "color": "tab:red",
+        },
+        {
+            "values_x": x1_pred2,
+            "values_v": v1_pred2,
+            "values_a": a1_pred2,
+            "label": label2,
+            "color": "tab:green",
+        },
+        {
+            "values_x": x1_pred3,
+            "values_v": v1_pred3,
+            "values_a": a1_pred3,
+            "label": label3,
+            "color": "tab:blue",
+        },
+    ]
 
-    # v1(t)
-    plt.subplot(3, 1, 2)
-    plt.plot(t_cpu, v1_gt,  'k',  lw=2,   label="GT v1")
-    plt.plot(t_cpu, v1_pr1, 'r--', lw=1.5, label=f"{label1} v1")
-    plt.plot(t_cpu, v1_pr2, 'g--', lw=1.5, label=f"{label2} v1")
-    plt.plot(t_cpu, v1_pr3, 'b--', lw=1.5, label=f"{label3} v1")
-    plt.ylabel("v1(t)")
-    plt.grid(True)
-    plt.legend()
+    # Displacement
+    axes[0].plot(t_cpu, x1_gt, color="black", linewidth=1.8, label=r"Ground truth")
+    for style in prediction_styles:
+        axes[0].plot(t_cpu, style["values_x"], linestyle="--", linewidth=1.4, color=style["color"], label=style["label"])
 
-    # a1(t)
-    plt.subplot(3, 1, 3)
-    plt.plot(t_cpu, a1_gt,  'k',  lw=2,   label="GT a1")
-    plt.plot(t_cpu, a1_pr1, 'r--', lw=1.5, label=f"{label1} a1")
-    plt.plot(t_cpu, a1_pr2, 'g--', lw=1.5, label=f"{label2} a1")
-    plt.plot(t_cpu, a1_pr3, 'b--', lw=1.5, label=f"{label3} a1")
-    plt.ylabel("a1(t)")
-    plt.xlabel("Time (s)")
-    plt.grid(True)
-    plt.legend()
+    axes[0].set_ylabel(r"Displacement $x_1(t)$")
+    axes[0].set_title(r"First-DOF displacement response", pad=8)
+    axes[0].grid(True, linestyle="--", alpha=0.35)
 
-    plt.tight_layout()
+    # Velocity
+    axes[1].plot(t_cpu, v1_gt, color="black", linewidth=1.8, label=r"Ground truth")
+    for style in prediction_styles:
+        axes[1].plot(t_cpu, style["values_v"], linestyle="--", linewidth=1.4, color=style["color"], label=style["label"])
+
+    axes[1].set_ylabel(r"Velocity $\dot{x}_1(t)$")
+    axes[1].set_title(r"First-DOF velocity response", pad=8)
+    axes[1].grid(True, linestyle="--", alpha=0.35)
+
+    # Acceleration
+    axes[2].plot(t_cpu, a1_gt, color="black", linewidth=1.8, label=r"Ground truth")
+    for style in prediction_styles:
+        axes[2].plot(t_cpu, style["values_a"], linestyle="--", linewidth=1.4, color=style["color"], label=style["label"])
+
+    axes[2].set_xlabel(r"Time $t$ [s]")
+    axes[2].set_ylabel(r"Acceleration $\ddot{x}_1(t)$")
+    axes[2].set_title(r"First-DOF acceleration response", pad=8)
+    axes[2].grid(True, linestyle="--", alpha=0.35)
+
+    # Shared legend below all subplots
+    handles, legend_labels = axes[0].get_legend_handles_labels()
+
+    fig.legend(handles, legend_labels, loc="lower center", ncol=4, frameon=False, fontsize=11, bbox_to_anchor=(0.5, 0.005))
+
+    fig.tight_layout(rect=[0, 0.07, 1, 1])
 
     if save_path is not None:
-        plt.savefig(save_path, dpi=250)
+        fig.savefig(save_path, dpi=300, bbox_inches="tight")
 
-    # plt.show()
-    # return groundtruth and predictions in case user needs them
+    plt.close(fig)
+
     return gt, pred1, pred2, pred3
 
 def build_sindy_discrepancy_from_nn_exp2(h_true_list, model, device="cpu"):
@@ -736,9 +769,4 @@ if __name__ == "__main__":
     traj_gt_test, pred_test4, pred_test6, pred_test10 = plot_x1_v1_a1_three_preds(t_test, h0_train[0], amp_test, u_fun_cos, model_4, model_6, model_10, dt=0.02, label1="4sec",label2="6sec",label3="10sec",save_path=save_plot_path)
 
     models_s3_nn = run_sindy_discrepancy_from_nn_exp2(h_true_list=pred_test10,model=model_10,dt=dt,threshold=0.5, t_train = 10.0, t_test = t_test_end, device=device)
-
-
-
-
-
 
